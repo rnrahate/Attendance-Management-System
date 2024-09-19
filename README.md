@@ -42,7 +42,7 @@ The **Face Recognition Attendance Management System** is designed to allow users
 
 ## Example Screenshot
 
-![alt text](<Screenshot 2024-09-19 143721.png>) ![alt text](<Screenshot 2024-09-19 143757.png>)
+![alt text](<Screenshot_1.png>) ![alt text](<Screenshot_2.png>)
 
 - ![Python](https://img.shields.io/badge/Python-3776AB?style=for-the-badge&logo=python&logoColor=white)
 - ![Tkinter](https://img.shields.io/badge/Tkinter-007ACC?style=for-the-badge&logo=python&logoColor=white)
