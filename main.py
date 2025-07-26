@@ -1,159 +1,211 @@
 import tkinter as tk
-from tkinter import filedialog, messagebox
+from tkinter import filedialog, messagebox, ttk
 import cv2
 import numpy as np
 import sqlite3
 from PIL import Image, ImageTk
 import os
 import datetime
+import json
+import base64
 import face_recognition
 
 # Define paths
 IMAGE_FOLDER = 'images/'
-
-# Ensure image folder exists
+DATA_FOLDER = 'student_data/'
+DB_FILE = 'attendance.db'
 os.makedirs(IMAGE_FOLDER, exist_ok=True)
+os.makedirs(DATA_FOLDER, exist_ok=True)
 
 # Database setup
 def create_database():
-    conn = sqlite3.connect('attendance.db')
+    conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
-    c.execute('''CREATE TABLE IF NOT EXISTS attendance (id INTEGER PRIMARY KEY, name TEXT, date TEXT)''')
+    c.execute('''CREATE TABLE IF NOT EXISTS attendance (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    student_id TEXT,
+                    student_name TEXT,
+                    timestamp TEXT)''')
     conn.commit()
     conn.close()
 
-# Save uploaded image
-def save_image(image, name):
-    file_path = os.path.join(IMAGE_FOLDER, f"{name}.jpg")
-    cv2.imwrite(file_path, image)
+# Save student image and encoding in JSON
+def save_student_data(student_id, student_name, frame):
+    rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    encodings = face_recognition.face_encodings(rgb_frame)
+    if not encodings:
+        messagebox.showerror("Error", "No face detected. Please try again.")
+        return False
 
-# Register a face in the database by uploading image
-def upload_image(name):
-    file_path = filedialog.askopenfilename(filetypes=[("Image Files", "*.jpg *.jpeg *.png")])
-    if file_path:
-        image = cv2.imread(file_path)
-        save_image(image, name)
-        messagebox.showinfo("Success", "Image uploaded successfully!")
+    _, buffer = cv2.imencode('.jpg', frame)
+    image_base64 = base64.b64encode(buffer).decode('utf-8')
 
-# Capture and save image from camera
-def capture_image(name):
-    video_capture = cv2.VideoCapture(0)
-    ret, frame = video_capture.read()
-    if ret:
-        save_image(frame, name)
-        messagebox.showinfo("Success", "Image captured successfully!")
-    video_capture.release()
-    cv2.destroyAllWindows()
+    student_data = {
+        "student_id": student_id,
+        "student_name": student_name,
+        "image": image_base64,
+        "encoding": encodings[0].tolist()
+    }
 
-# Mark attendance based on face recognition
+    with open(os.path.join(DATA_FOLDER, f"{student_name}.json"), 'w') as f:
+        json.dump(student_data, f, indent=4)
+
+    return True
+
+# Mark attendance if match found
 def mark_attendance():
-    video_capture = cv2.VideoCapture(0)
-    known_faces = []
-    known_names = []
-    
-    # Load known faces
-    for filename in os.listdir(IMAGE_FOLDER):
-        if filename.endswith('.jpg'):
-            name = os.path.splitext(filename)[0]
-            image_path = os.path.join(IMAGE_FOLDER, filename)
-            image = face_recognition.load_image_file(image_path)
-            encoding = face_recognition.face_encodings(image)[0]
-            known_faces.append(encoding)
-            known_names.append(name)
-    
-    while True:
-        ret, frame = video_capture.read()
-        rgb_frame = frame[:, :, ::-1]
-        face_locations = face_recognition.face_locations(rgb_frame)
-        face_encodings = face_recognition.face_encodings(rgb_frame, face_locations)
-        
-        for face_encoding in face_encodings:
-            matches = face_recognition.compare_faces(known_faces, face_encoding)
-            face_distances = face_recognition.face_distance(known_faces, face_encoding)
-            best_match_index = np.argmin(face_distances)
-            
-            if matches[best_match_index]:
-                name = known_names[best_match_index]
-                today_date = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    # Load all encodings
+    encodings_list = []
+    names = []
+    ids = []
 
-                messagebox.showinfo("Attendance", f"Attendance marked for {name}")
-                conn = sqlite3.connect('attendance.db')
-                c = conn.cursor()
-                c.execute("INSERT INTO attendance (name, date) VALUES (?, ?)", (name, today_date))
-                conn.commit()
-                conn.close()
+    for filename in os.listdir(DATA_FOLDER):
+        if filename.endswith(".json"):
+            with open(os.path.join(DATA_FOLDER, filename), 'r') as f:
+                data = json.load(f)
+                enc = np.array(data["encoding"])
+                encodings_list.append(enc)
+                names.append(data["student_name"])
+                ids.append(data["student_id"])
 
-                video_capture.release()
-                cv2.destroyAllWindows()
-                return
-        
-        if not face_encodings:
-            messagebox.showerror("Error", "No matching face found.")
-            break
+    if not encodings_list:
+        messagebox.showerror("Error", "No registered users found.")
+        return
 
-    video_capture.release()
-    cv2.destroyAllWindows()
+    cap = cv2.VideoCapture(0)
+    if not cap.isOpened():
+        messagebox.showerror("Error", "Cannot access webcam.")
+        return
 
-# Display monthly attendance
+    messagebox.showinfo("Instructions", "Camera will capture your face in 3 seconds.")
+    cv2.waitKey(3000)
+
+    ret, frame = cap.read()
+    cap.release()
+
+    if not ret:
+        messagebox.showerror("Error", "Failed to capture image.")
+        return
+
+    rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    face_locations = face_recognition.face_locations(rgb_frame)
+    face_encodings = face_recognition.face_encodings(rgb_frame, face_locations)
+
+    for face_encoding in face_encodings:
+        matches = face_recognition.compare_faces(encodings_list, face_encoding)
+        face_distances = face_recognition.face_distance(encodings_list, face_encoding)
+        best_match_index = np.argmin(face_distances)
+
+        if matches[best_match_index]:
+            student_name = names[best_match_index]
+            student_id = ids[best_match_index]
+
+            conn = sqlite3.connect(DB_FILE)
+            c = conn.cursor()
+            now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            c.execute("INSERT INTO attendance (student_id, student_name, timestamp) VALUES (?, ?, ?)",
+                      (student_id, student_name, now))
+            conn.commit()
+            conn.close()
+
+            messagebox.showinfo("Success", f"Attendance marked for {student_name}.")
+            return
+
+    messagebox.showwarning("Not Found", "Face not recognized!")
+
+# View attendance records for the current month in tabular format
 def view_attendance():
-    conn = sqlite3.connect('attendance.db')
+    conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
-    c.execute("SELECT name, date FROM attendance WHERE date LIKE ?", (f'%{datetime.datetime.now().strftime("%Y-%m")}%',))
-    attendance_data = c.fetchall()
+    current_month = datetime.datetime.now().strftime("%Y-%m")
+    c.execute("SELECT student_id, student_name, timestamp FROM attendance WHERE timestamp LIKE ?", (f"{current_month}%",))
+    records = c.fetchall()
     conn.close()
-    
-    if attendance_data:
-        attendance_info = "\n".join([f"{row[0]}: {row[1]}" for row in attendance_data])
-        messagebox.showinfo("Attendance Records", attendance_info)
-    else:
-        messagebox.showinfo("Attendance Records", "No attendance records for this month.")
 
-# Tkinter GUI setup
+    if not records:
+        messagebox.showinfo("Monthly Attendance", "No attendance records found.")
+        return
+
+    table_window = tk.Toplevel()
+    table_window.title("Monthly Attendance Records")
+    table_window.geometry("600x400")
+
+    tree = ttk.Treeview(table_window, columns=("ID", "Name", "Timestamp"), show='headings')
+    tree.heading("ID", text="Student ID")
+    tree.heading("Name", text="Student Name")
+    tree.heading("Timestamp", text="Timestamp")
+
+    for row in records:
+        tree.insert("", "end", values=row)
+
+    tree.pack(fill=tk.BOTH, expand=True)
+
+# GUI Setup
 def main():
     create_database()
-    
-    window = tk.Tk()
-    window.title("Face Recognition Attendance System")
-    window.geometry("400x400")
-    
-    label = tk.Label(window, text="Attendance System", font=("Arial", 16, "bold"))
-    label.pack(pady=20)
-    
-    upload_button = tk.Button(window, text="Upload Image", command=lambda: show_upload_options(), font=("Arial", 12))
-    upload_button.pack(pady=10)
-    
-    mark_attendance_button = tk.Button(window, text="Mark Attendance", command=mark_attendance, font=("Arial", 12))
-    mark_attendance_button.pack(pady=10)
-    
-    view_attendance_button = tk.Button(window, text="View Monthly Attendance", command=view_attendance, font=("Arial", 12))
-    view_attendance_button.pack(pady=10)
-    
-    window.mainloop()
+    root = tk.Tk()
+    root.title("Face Recognition Attendance System")
+    root.geometry("400x350")
 
-def show_upload_options():
-    def on_upload():
-        name = name_entry.get()
-        if capture_var.get():
-            capture_image(name)
-        else:
-            upload_image(name)
-    
-    upload_window = tk.Toplevel()
-    upload_window.title("Upload Image")
-    upload_window.geometry("400x200")
-    
-    tk.Label(upload_window, text="Enter Name", font=("Arial", 12)).pack(pady=5)
-    name_entry = tk.Entry(upload_window, font=("Arial", 12))
-    name_entry.pack(pady=5)
-    
-    tk.Label(upload_window, text="Choose upload method", font=("Arial", 12)).pack(pady=10)
-    
-    capture_var = tk.BooleanVar()
-    tk.Radiobutton(upload_window, text="Capture Using Camera", variable=capture_var, value=True).pack()
-    tk.Radiobutton(upload_window, text="Upload File", variable=capture_var, value=False).pack()
-    
-    upload_button = tk.Button(upload_window, text="Submit", command=on_upload, font=("Arial", 12))
-    upload_button.pack(pady=10)
+    tk.Label(root, text="Attendance System", font=("Arial", 16, "bold")).pack(pady=20)
+
+    def on_register():
+        def capture():
+            name = name_entry.get().strip()
+            sid = id_entry.get().strip()
+            if not name or not sid:
+                messagebox.showerror("Error", "Please fill all fields.")
+                return
+
+            cap = cv2.VideoCapture(0)
+            if not cap.isOpened():
+                messagebox.showerror("Error", "Cannot access webcam.")
+                return
+
+            while True:
+                ret, frame = cap.read()
+                if not ret:
+                    messagebox.showerror("Error", "Failed to read from webcam.")
+                    break
+
+                cv2.putText(frame, "Press C to capture, Q to quit", (10, 30),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+                cv2.imshow("Register", frame)
+
+                key = cv2.waitKey(1) & 0xFF
+                if key == ord('c'):
+                    if save_student_data(sid, name, frame):
+                        messagebox.showinfo("Saved", "Student registered successfully.")
+                        cap.release()
+                        cv2.destroyAllWindows()
+                        return
+                elif key == ord('q'):
+                    break
+
+            cap.release()
+            cv2.destroyAllWindows()
+
+        reg_window = tk.Toplevel(root)
+        reg_window.title("Register Student")
+        reg_window.geometry("300x200")
+
+        tk.Label(reg_window, text="Name").pack(pady=5)
+        name_entry = tk.Entry(reg_window)
+        name_entry.pack(pady=5)
+
+        tk.Label(reg_window, text="Student ID").pack(pady=5)
+        id_entry = tk.Entry(reg_window)
+        id_entry.pack(pady=5)
+
+        tk.Button(reg_window, text="Capture & Register", command=capture).pack(pady=10)
+
+    tk.Button(root, text="Register Student", command=on_register, font=("Arial", 12)).pack(pady=10)
+    tk.Button(root, text="Mark Attendance", command=mark_attendance, font=("Arial", 12)).pack(pady=10)
+    tk.Button(root, text="View Monthly Attendance", command=view_attendance, font=("Arial", 12)).pack(pady=10)
+
+    root.mainloop()
 
 if __name__ == "__main__":
     main()
+# This code implements a face recognition attendance system using OpenCV, face_recognition, and Tkinter.
+# It allows users to register students, capture their images, and mark attendance based on face recognition
