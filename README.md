@@ -73,4 +73,6 @@ The **Face Recognition Attendance Management System** is a desktop-based solutio
 
 This project is open-source and available under the MIT License.
 
+```
+
 HAPPY CODING! 
