@@ -68,6 +68,7 @@ The **Face Recognition Attendance Management System** is a desktop-based solutio
 ├── README.md             # Project documentation
 └── requirements.txt      # Dependency list (optional)
 
+```
 ## License
 
 This project is open-source and available under the MIT License.
